@@ -1,0 +1,53 @@
+---
+title: "fun-programming-midterm"
+author: "Cianna Bedford-Petersen"
+date: "4/23/2019"
+output: html_document
+---
+
+```{r setup}
+
+knitr::opts_chunk$set(cache = TRUE)
+
+library(tidyverse)
+library(glue)
+library(janitor)
+```
+
+* Part A
+
+** Problem 1
+
+*** Download Data
+
+```{r part A1.1}
+
+#download data and bind together 
+
+download_file <- function(year) {
+    link <- glue::glue("https://www.oregon.gov/ode/educator-resources/assessment/TestResults20{year}/pagr_schools_ela_raceethnicity_{year-1}{year}.xlsx")
+    rio::import(link, setclass = "tibble", na = c("-", "--", "*"))
+}
+
+
+batch <- map_df(15:18, download_file)
+```
+
+*** Clean Data
+
+```{r partA1.2}
+
+stu_data <- batch %>% 
+  clean_names() %>% 
+  filter(student_group == "White"|student_group == "Hispanic/Latino") %>% 
+  gather(c(number_level_1, number_level_2, number_level_3, number_level_4), key = level, value = n) %>%
+  mutate(level = recode(level, 
+                        "number_level_1" = 1, 
+                        "number_level_2" = 2, 
+                        "number_level_3" = 3, 
+                        "number_level_4" = 4)) %>% 
+  select(academic_year, district, school, student_group, grade_level, level, n) %>% 
+  drop_na(n)
+
+```
+
