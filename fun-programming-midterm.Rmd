@@ -5,49 +5,199 @@ date: "4/23/2019"
 output: html_document
 ---
 
-```{r setup}
+# Setup
+
+```{r setup, warning=FALSE}
 
 knitr::opts_chunk$set(cache = TRUE)
+options(scipen = 999)
 
 library(tidyverse)
 library(glue)
 library(janitor)
+library(pracma)
+library(fs)
+library(here)
 ```
 
-* Part A
+# Part A
 
-** Problem 1
+## Problem 1
 
-*** Download Data
+```{r part A1.1, warning=FALSE}
 
-```{r part A1.1}
-
-#download data and bind together 
-
+#download data
 download_file <- function(year) {
     link <- glue::glue("https://www.oregon.gov/ode/educator-resources/assessment/TestResults20{year}/pagr_schools_ela_raceethnicity_{year-1}{year}.xlsx")
     rio::import(link, setclass = "tibble", na = c("-", "--", "*"))
 }
 
-
+#bind into a single data frame 
+#include only years 15-18
 batch <- map_df(15:18, download_file)
 ```
 
-*** Clean Data
+```{r partA1.2, warning=FALSE}
 
-```{r partA1.2}
-
+#clean data
 stu_data <- batch %>% 
+#use clean names to put variable names in snake case
   clean_names() %>% 
+#fliter for white and hispanic/latino students
   filter(student_group == "White"|student_group == "Hispanic/Latino") %>% 
+#gather variables to make columns level and n
   gather(c(number_level_1, number_level_2, number_level_3, number_level_4), key = level, value = n) %>%
-  mutate(level = recode(level, 
-                        "number_level_1" = 1, 
-                        "number_level_2" = 2, 
-                        "number_level_3" = 3, 
-                        "number_level_4" = 4)) %>% 
+#select only necessary variables 
   select(academic_year, district, school, student_group, grade_level, level, n) %>% 
+#recode level data to match example
+  mutate(level = recode(level, "number_level_1" = 1, "number_level_2" = 2,"number_level_3" = 3,"number_level_4" = 4)) %>% 
+#use tidyverse function to remove any rows with missing data in the n variable
   drop_na(n)
 
+```
+
+## Problem 2
+
+```{r partA2.1, warning=FALSE}
+
+#split by variables we want to have a cumulative n for
+#district not needed because our school variable is more specific
+stud_split <-split(stu_data, list(stu_data$academic_year, stu_data$school, stu_data$student_group, stu_data$grade_level))
+
+#use map and cumsum to make a cumulative n for each school by student group, grade, and academic year.
+#map_df will give us a data frame
+cum_stud <- map_df(stud_split, ~mutate(.x, cn = cumsum(n)))
+
+```
+
+## Problem 3
+
+```{r part A3.1, warning=FALSE}
+
+#reformat data and drop NAs
+ref_stud <- cum_stud %>% 
+#remove n column by selecting all other variables
+  select(academic_year, district, school, student_group, grade_level, level, cn) %>% 
+#make hispanic/latino and white columns and fill with cumulative n
+  spread(key = student_group, value = cn) %>%
+#use tidyverse function to remove any rows with missing data in the n variable
+  drop_na(c("Hispanic/Latino", "White"))
+head(ref_stud)
+  
+```
+
+# Part B
+
+## Problem 1
+
+```{r part B1.1, warning=FALSE}
+
+#store function
+gap <- function(data, ref, foc) {
+    x <- data[[ref]]
+    y <- data[[foc]]
+    auc <- pracma::trapz(y / y[length(x)],
+                         x / x[length(x)])
+    sqrt(2)*qnorm(auc)
+}
+
+
+#estimate achievement gap
+ach_gap <- ref_stud %>% 
+  nest(-c(academic_year, district, school, grade_level)) %>% 
+#add column for effect size. Use gap function stored above with white as the reference distribution and hispanic/latino as the focal distribution 
+  mutate(eff_size= map_dbl(data, ~gap(.x, ref = "White", foc = "Hispanic/Latino")))
+
+
+```
+
+## Problem 2
+
+```{r part B2.1, warning=FALSE}
+
+#one plot
+
+#prep data 
+pd <- ach_gap %>% 
+# make grade a factor and recode variables 
+  mutate(grade_level = as.factor(recode(grade_level, "Grade 3" = 3, "Grade 4" = 4, 
+                                        "Grade 5" = 5, "Grade 6" = 6, "Grade 7" = 7, 
+                                        "Grade 8" = 8, "Grade HS (11)" = 11)))
+
+#plot Ashland 2017-2018 example
+single_plot <- pd %>% 
+  filter(school == "Ashland Middle School" ,
+         academic_year == "2017-2018") %>% 
+  ggplot(aes(grade_level, eff_size)) +
+  geom_col(aes(fill = eff_size)) + 
+  geom_hline(yintercept = 0, size = 2, color = "#baa7c9") +
+  scale_fill_distiller(type = "seq", 
+                         limits = c(-1.5, 1.5),
+                         palette = "PuOr",
+                         direction = -1) +
+  coord_flip() +
+  labs(title = "Achievement Gap Estimates: Ashland Middle School",
+       subtitle = "Students coded as White as compared to those coded as Hispanic/Latino",
+       caption = "2017-18 School year, Ashland School District, Oregon",
+       x = "Grade",
+       y = "Effect Size")+
+  theme_minimal() +
+  theme (legend.direction = "horizontal",
+        legend.title = element_blank(), 
+        legend.position = c(.8,-.2),
+        plot.margin = unit(c(1.5,1.5,1.5,1.5),"cm"), 
+        legend.key.width = unit(2, "cm"))
+
+
+
+#nest data and select first 100 school/year/district combinations
+pd2 <- pd %>% 
+  nest(-c(district, school, academic_year)) %>% 
+  slice(1:100)
+
+
+#use pmap to change title, year, and district
+pd3 <- pd2 %>% 
+  mutate(plot = pmap(list(data, school, academic_year, district), ~ggplot(..1, aes(grade_level, eff_size)) +
+  geom_col(aes(fill = eff_size)) + 
+  geom_hline(yintercept = 0, size = 2, color = "#baa7c9") +
+  scale_fill_distiller(type = "seq", 
+                         limits = c(-1.5, 1.5),
+                         palette = "PuOr",
+                         direction = -1) +
+  coord_flip() +
+  labs(title = glue("Achievement Gap Estimates: {..2}"),
+       subtitle = "Students coded as White as compared to those coded as Hispanic/Latino",
+       caption = glue("{..3} School year, {..4}, Oregon"),
+       x = "Grade",
+       y = "Effect Size")+
+  theme_minimal() +
+  theme (legend.direction = "horizontal",
+        legend.title = element_blank(), 
+        legend.position = c(.8,-.2),
+        plot.margin = unit(c(1.5,1.5,1.5,1.5),"cm"), 
+        legend.key.width = unit(2, "cm"))))
+
+```
+
+## Problem 3
+
+```{r part B3.1, warning=FALSE}
+
+#save plots to a directory
+
+#create directory
+dir_create(here("plots"))
+
+#create file names and path
+files <- glue("{pd3$school}_{pd3$academic_year}")
+paths <- here("plots", glue("{files}.png"))
+
+
+# save files
+walk2(paths, pd3$plot, ggsave,
+      width = 9.5, 
+      height = 6.5,
+      dpi = 500)
 ```
 
